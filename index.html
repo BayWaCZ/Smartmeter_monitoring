@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Smart Meter Cloud Dashboard</title>
+  <!-- MQTT.js & ApexCharts přes CDN -->
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/apexcharts"></script>
+  <style>
+    :root {
+      --bg: #0b1120;
+      --card-bg: #111827;
+      --card-border: #1f2937;
+      --text-main: #f3f4f6;
+      --text-sub: #9ca3af;
+      --import-color: #f87171;
+      --export-color: #4ade80;
+      --accent: #3b82f6;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: system-ui, -apple-system, sans-serif; }
+    body { background-color: var(--bg); color: var(--text-main); padding: 15px; display: flex; flex-direction: column; align-items: center; min-height: 100vh; }
+    .dashboard { width: 100%; max-width: 600px; display: flex; flex-direction: column; gap: 12px; }
+
+    /* Hlavička a stav připojení */
+    .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+    .header h1 { font-size: 1.1rem; color: var(--text-sub); }
+    .status-group { display: flex; gap: 6px; }
+    .status { font-size: 0.75rem; padding: 4px 10px; border-radius: 20px; background: #1f2937; color: var(--text-sub); display: flex; align-items: center; gap: 6px; }
+    .status-dot { width: 8px; height: 8px; border-radius: 50%; background: #ef4444; }
+    .status.online .status-dot { background: #22c55e; }
+    .status.demo .status-dot { background: #f59e0b; }
+
+    /* Záložky zařízení */
+    .tabs { display: flex; gap: 8px; border-bottom: 2px solid var(--card-border); padding-bottom: 8px; overflow-x: auto; }
+    .tab-btn { background: var(--card-bg); border: 1px solid var(--card-border); color: var(--text-sub); padding: 8px 16px; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 0.85rem; transition: all 0.2s; white-space: nowrap; }
+    .tab-btn:hover { color: var(--text-main); border-color: #374151; }
+    .tab-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+    /* Karty fáze */
+    .phase-card { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 12px; padding: 14px 18px; display: flex; flex-direction: column; gap: 10px; }
+    .phase-header { display: flex; justify-content: space-between; }
+    .phase-title { font-weight: 800; font-size: 1.3rem; }
+    .phase-metrics { font-size: 0.95rem; color: var(--text-sub); }
+    .metric-val { color: var(--text-main); font-weight: 600; }
+    .flow-row { display: flex; justify-content: space-between; align-items: flex-end; }
+    .node { display: flex; flex-direction: column; align-items: center; gap: 2px; width: 45px; }
+    .node svg { width: 24px; height: 24px; fill: none; stroke: var(--text-sub); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+    .node span { font-size: 0.65rem; font-weight: 700; color: var(--text-sub); }
+    .flow-center { flex-grow: 1; display: flex; flex-direction: column; align-items: center; gap: 6px; }
+    .phase-power { font-size: 1.4rem; font-weight: 800; }
+    .line-container { width: 100%; height: 3px; background: #2d3748; position: relative; overflow: hidden; }
+    .line-pulse { position: absolute; top: 0; bottom: 0; width: 40%; }
+
+    .state-import .phase-power { color: var(--import-color); }
+    .state-import .node-house svg { stroke: var(--import-color); }
+    .state-import .line-pulse { background: linear-gradient(90deg, transparent, var(--import-color), transparent); animation: flow-right 1.2s infinite linear; }
+    .state-export .phase-power { color: var(--export-color); }
+    .state-export .node-grid svg { stroke: var(--export-color); }
+    .state-export .line-pulse { background: linear-gradient(90deg, transparent, var(--export-color), transparent); animation: flow-left 1.2s infinite linear; }
+
+    @keyframes flow-right { 0% { left: -40%; } 100% { left: 100%; } }
+    @keyframes flow-left { 0% { left: 100%; } 100% { left: -40%; } }
+
+    /* Souhrn a patka */
+    .summary-bar { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 8px; padding: 12px 16px; display: flex; justify-content: space-between; }
+    .summary-label { font-size: 0.85rem; color: var(--text-sub); font-weight: 600; }
+    .summary-value { font-size: 1.1rem; font-weight: 700; }
+    .footer-time { font-size: 0.75rem; color: var(--text-sub); text-align: center; margin-top: 2px; }
+    .time-val { font-weight: 700; color: var(--text-main); }
+
+    /* Accordion rozbalovací graf */
+    .chart-accordion { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 12px; overflow: hidden; margin-top: 6px; }
+    .chart-header { padding: 12px 16px; display: flex; justify-content: space-between; align-items: center; cursor: pointer; user-select: none; transition: background 0.2s; }
+    .chart-header:hover { background: #1f2937; }
+    .chart-title { font-size: 0.9rem; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+    .chevron-icon { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2.5; transition: transform 0.3s; }
+    .chart-accordion.open .chevron-icon { transform: rotate(180deg); }
+
+    .chart-body { display: none; padding: 16px; border-top: 1px solid var(--card-border); flex-direction: column; gap: 12px; }
+    .chart-accordion.open .chart-body { display: flex; }
+
+    /* Ovládání grafu (Přepínání dnů) */
+    .date-controls { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+    .date-btn { background: #1f2937; border: 1px solid #374151; color: var(--text-main); padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 0.8rem; font-weight: 600; }
+    .date-btn:hover { background: #374151; }
+    .current-date-display { font-size: 0.85rem; font-weight: 700; color: var(--accent); }
+
+    #chart-container { min-height: 320px; width: 100%; }
+
+    .icon-pylon { d: path("M13 2L3 14h9l-1 8 10-12h-9l1-8z"); }
+    .icon-house { d: path("M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2zM9 22V12h6v10"); }
+  </style>
+</head>
+<body>
+  <div class="dashboard">
+    <div class="header">
+      <h1>Smart Meter Cloud</h1>
+      <div class="status-group">
+        <div class="status" id="status-badge"><div class="status-dot"></div><span id="status-text">Připojování...</span></div>
+      </div>
+    </div>
+
+    <!-- Záložky -->
+    <div class="tabs" id="tabs-container">
+      <button class="tab-btn active" onclick="switchTab('hlavni', event)">Hlavní (Pata objektu)</button>
+      <button class="tab-btn" onclick="switchTab('garaz', event)">Garáž</button>
+      <button class="tab-btn" onclick="switchTab('fve', event)">FVE / Střídač</button>
+    </div>
+
+    <!-- Živé fáze -->
+    <div class="phase-card state-import" id="l1-card">
+      <div class="phase-header"><span class="phase-title">L1</span><div class="phase-metrics"><span><span class="metric-val" id="l1-volts">0</span> V</span> • <span><span class="metric-val" id="l1-amps">0.0</span> A</span></div></div>
+      <div class="flow-row"><div class="node node-grid"><svg viewBox="0 0 24 24"><path class="icon-pylon"/></svg><span>SÍŤ</span></div><div class="flow-center"><span class="phase-power" id="l1-power">0 W</span><div class="line-container"><div class="line-pulse"></div></div></div><div class="node node-house"><svg viewBox="0 0 24 24"><path class="icon-house"/></svg><span>DŮM</span></div></div>
+    </div>
+    <div class="phase-card state-import" id="l2-card">
+      <div class="phase-header"><span class="phase-title">L2</span><div class="phase-metrics"><span><span class="metric-val" id="l2-volts">0</span> V</span> • <span><span class="metric-val" id="l2-amps">0.0</span> A</span></div></div>
+      <div class="flow-row"><div class="node node-grid"><svg viewBox="0 0 24 24"><path class="icon-pylon"/></svg><span>SÍŤ</span></div><div class="flow-center"><span class="phase-power" id="l2-power">0 W</span><div class="line-container"><div class="line-pulse"></div></div></div><div class="node node-house"><svg viewBox="0 0 24 24"><path class="icon-house"/></svg><span>DŮM</span></div></div>
+    </div>
+    <div class="phase-card state-import" id="l3-card">
+      <div class="phase-header"><span class="phase-title">L3</span><div class="phase-metrics"><span><span class="metric-val" id="l3-volts">0</span> V</span> • <span><span class="metric-val" id="l3-amps">0.0</span> A</span></div></div>
+      <div class="flow-row"><div class="node node-grid"><svg viewBox="0 0 24 24"><path class="icon-pylon"/></svg><span>SÍŤ</span></div><div class="flow-center"><span class="phase-power" id="l3-power">0 W</span><div class="line-container"><div class="line-pulse"></div></div></div><div class="node node-house"><svg viewBox="0 0 24 24"><path class="icon-house"/></svg><span>DŮM</span></div></div>
+    </div>
+
+    <!-- Souhrn -->
+    <div class="summary-bar">
+      <span class="summary-label">CELKOVÝ VÝKON</span>
+      <span class="summary-value" id="total-power">0 W</span>
+    </div>
+    <div class="footer-time">
+      Poslední odeslaná data (<span id="active-device-name">Hlavní</span>): <span class="time-val" id="last-update">--:--:--</span>
+    </div>
+
+    <!-- Rozbalovací graf historie -->
+    <div class="chart-accordion" id="chart-accordion">
+      <div class="chart-header" onclick="toggleChart()">
+        <span class="chart-title">
+          <svg style="width:18px;height:18px;fill:none;stroke:var(--accent);stroke-width:2;" viewBox="0 0 24 24"><path d="M3 3v18h18M18 9l-5 5-4-4-3 3"/></svg>
+          Historie výkonů
+        </span>
+        <svg class="chevron-icon" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
+      </div>
+      <div class="chart-body">
+        <div class="date-controls">
+          <button class="date-btn" onclick="changeDate(-1)">&larr; Předchozí den</button>
+          <span class="current-date-display" id="chart-date-text">Dnes</span>
+          <button class="date-btn" onclick="changeDate(1)">Následující den &rarr;</button>
+        </div>
+        <div id="chart-container"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // =========================================================================
+    // ⚙️ ZDE UPRAVTE SVÉ ÚDAJE Z HIVEMQ CLOUD:
+    // =========================================================================
+    const HIVEMQ_URL  = 'wss://109e3418cc4e472ca8be85f97368e4da.s1.eu.hivemq.cloud:8884/mqtt'; // Změňte VASE_CLUSTER_URL
+    const HIVEMQ_USER = 'BayWa_dashboard';                                        // Vaše přihlašovací jméno
+    const HIVEMQ_PASS = 'Distribuce2016';                                         // Vaše heslo
+    // =========================================================================
+
+    const TOPIC_BASE = 'baywa/mereni/';
+
+    let activeTab = 'hlavni';
+    let selectedDate = new Date();
+    let chartInstance = null;
+    let isDemoActive = false;
+
+    // Stav jednotlivých zařízení
+    const devicesData = {
+      hlavni: { p1: -450, p2: -120, p3: 850, v1: 231, v2: 229, v3: 230, i1: 2.1, i2: 0.6, i3: 3.7, time: '--:--:--' },
+      garaz:  { p1: -2100, p2: 0, p3: 0, v1: 230, v2: 231, v3: 228, i1: 9.1, i2: 0.0, i3: 0.0, time: '--:--:--' },
+      fve:    { p1: 1200, p2: 1150, p3: 1300, v1: 235, v2: 234, v3: 236, i1: 5.1, i2: 4.9, i3: 5.5, time: '--:--:--' }
+    };
+
+    // --- PŘEPÍNÁNÍ ZÁLOŽEK ---
+    function switchTab(deviceId, evt) {
+      activeTab = deviceId;
+      document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+      evt.target.classList.add('active');
+      document.getElementById('active-device-name').innerText = evt.target.innerText.split(' ')[0];
+      renderActiveTab();
+      if (document.getElementById('chart-accordion').classList.contains('open')) {
+        loadHistoricalChartData();
+      }
+    }
+
+    function updatePhaseDisplay(prefix, p, v, a) {
+      document.getElementById(`${prefix}-volts`).innerText = v || 0;
+      document.getElementById(`${prefix}-amps`).innerText = parseFloat(a || 0).toFixed(1);
+      const card = document.getElementById(`${prefix}-card`);
+      const power = document.getElementById(`${prefix}-power`);
+      const valP = parseInt(p) || 0;
+
+      if (valP > 0) {
+        power.innerText = `+${valP} W`;
+        card.className = 'phase-card state-export';
+      } else if (valP < 0) {
+        power.innerText = `${valP} W`;
+        card.className = 'phase-card state-import';
+      } else {
+        power.innerText = `0 W`;
+        card.className = 'phase-card';
+      }
+    }
+
+    function renderActiveTab() {
+      const data = devicesData[activeTab];
+      if (!data) return;
+      updatePhaseDisplay('l1', data.p1, data.v1, data.i1);
+      updatePhaseDisplay('l2', data.p2, data.v2, data.i2);
+      updatePhaseDisplay('l3', data.p3, data.v3, data.i3);
+      const tot = (parseInt(data.p1) || 0) + (parseInt(data.p2) || 0) + (parseInt(data.p3) || 0);
+      document.getElementById('total-power').innerText = `${tot > 0 ? '+' : ''}${tot} W`;
+      document.getElementById('last-update').innerText = data.time;
+    }
+
+    // --- ROZBALOVACÍ GRAF (ACCORDION) ---
+    function toggleChart() {
+      const accordion = document.getElementById('chart-accordion');
+      accordion.classList.toggle('open');
+      if (accordion.classList.contains('open')) {
+        if (!chartInstance) {
+          initChart();
+        } else {
+          loadHistoricalChartData();
+        }
+      }
+    }
+
+    function changeDate(days) {
+      selectedDate.setDate(selectedDate.getDate() + days);
+      updateDateDisplay();
+      loadHistoricalChartData();
+    }
+
+    function updateDateDisplay() {
+      const options = { weekday: 'short', day: 'numeric', month: 'numeric', year: 'numeric' };
+      document.getElementById('chart-date-text').innerText = selectedDate.toLocaleDateString('cs-CZ', options);
+    }
+
+// --- INICIALIZACE A GENERIK GRAFU (ApexCharts) ---
+    function initChart() {
+      updateDateDisplay();
+      const options = {
+        series: [],
+        chart: {
+          type: 'line',
+          height: 320,
+          background: 'transparent',
+          foreColor: '#9ca3af',
+          toolbar: {
+            show: true,
+            tools: {
+              download: false,
+              selection: false, // Vypne obdélníkové okénko výběru
+              zoom: false,      // Vypne nástroj pro zoomování okénkem
+              zoomin: false,    // Vypne tlačítko +
+              zoomout: false,   // Vypne tlačítko -
+              pan: false,       // Vypne ručičku posunu
+              reset: true       // Ponechá POUZE ikonu pro reset zoomu v pravém rohu
+            }
+          },
+          zoom: {
+            enabled: true,
+            type: 'x',
+            autoScaleYaxis: true // Při zoomu kolečkem přizpůsobí rozsah Y osy
+          }
+        },
+        colors: ['#f87171', '#60a5fa', '#facc15', '#4ade80'],
+        stroke: { curve: 'smooth', width: 2 },
+        grid: { borderColor: '#1f2937' },
+        xaxis: { type: 'datetime' },
+        yaxis: { labels: { formatter: (val) => `${val.toFixed(0)} W` } },
+        tooltip: {
+          theme: 'dark',
+          x: { format: 'dd.MM.yyyy HH:mm:ss' }
+        },
+        legend: { position: 'top', horizontalAlign: 'right' }
+      };
+
+      chartInstance = new ApexCharts(document.querySelector("#chart-container"), options);
+      chartInstance.render();
+      loadHistoricalChartData();
+    }
+
+    // Generátor demo historie pro graf
+    function loadHistoricalChartData() {
+      const p1Data = [], p2Data = [], p3Data = [], totalData = [];
+      const startTime = new Date(selectedDate).setHours(0, 0, 0, 0);
+
+      // Vygenerujeme 24 hodin po 15 minutách (96 bodů)
+      for (let i = 0; i < 96; i++) {
+        const timestamp = startTime + i * 15 * 60 * 1000;
+
+        const hour = i / 4;
+        let baseP1 = Math.sin((hour - 6) / 3) * 500 - 200;
+        let baseP2 = Math.cos((hour - 12) / 4) * 300 - 150;
+        let baseP3 = (hour > 10 && hour < 16 && activeTab === 'fve') ? 1500 : -300;
+
+        const p1 = Math.round(baseP1 + (Math.random() * 200 - 100));
+        const p2 = Math.round(baseP2 + (Math.random() * 150 - 75));
+        const p3 = Math.round(baseP3 + (Math.random() * 250 - 125));
+        const tot = p1 + p2 + p3;
+
+        p1Data.push([timestamp, p1]);
+        p2Data.push([timestamp, p2]);
+        p3Data.push([timestamp, p3]);
+        totalData.push([timestamp, tot]);
+      }
+
+      chartInstance.updateSeries([
+        { name: 'L1 Výkon', data: p1Data },
+        { name: 'L2 Výkon', data: p2Data },
+        { name: 'L3 Výkon', data: p3Data },
+        { name: 'Celkový Výkon', data: totalData }
+      ]);
+    }
+
+    // --- SIMULÁTOR ŽIVÝCH DEMO DAT ---
+    function startLiveDemoSimulation() {
+      if (isDemoActive) return;
+      isDemoActive = true;
+      document.getElementById('status-badge').className = 'status demo';
+      document.getElementById('status-text').innerText = 'Demo režim (Živě)';
+
+      setInterval(() => {
+        Object.keys(devicesData).forEach(dev => {
+          devicesData[dev].p1 += Math.round((Math.random() - 0.5) * 40);
+          devicesData[dev].p2 += Math.round((Math.random() - 0.5) * 30);
+          devicesData[dev].p3 += Math.round((Math.random() - 0.5) * 50);
+          devicesData[dev].v1 = 230 + Math.round((Math.random() - 0.5) * 4);
+          devicesData[dev].i1 = (Math.abs(devicesData[dev].p1) / devicesData[dev].v1).toFixed(1);
+          devicesData[dev].time = new Date().toTimeString().split(' ')[0];
+        });
+        renderActiveTab();
+      }, 600);
+    }
+
+    // --- MQTT PŘIPOJENÍ K HIVEMQ CLOUD ---
+    const client = mqtt.connect(HIVEMQ_URL, {
+      clientId: 'web_dashboard_' + Math.random().toString(16).substr(2, 8),
+      username: HIVEMQ_USER,
+      password: HIVEMQ_PASS,
+      keepalive: 30
+    });
+
+    let mqttTimeout = setTimeout(() => {
+      // Pokud se nepodaří připojit do 3.5s (špatné údaje nebo vypnuté ESP), zapne se demo
+      if (!client.connected) startLiveDemoSimulation();
+    }, 3500);
+
+    client.on('connect', () => {
+      clearTimeout(mqttTimeout);
+      isDemoActive = false;
+      document.getElementById('status-badge').className = 'status online';
+      document.getElementById('status-text').innerText = 'MQTT Živě';
+      client.subscribe(TOPIC_BASE + '+');
+    });
+
+    client.on('message', (topic, payload) => {
+      try {
+        const deviceId = topic.replace(TOPIC_BASE, '');
+        const data = JSON.parse(payload.toString());
+        data.time = new Date().toTimeString().split(' ')[0];
+        devicesData[deviceId] = data;
+        if (deviceId === activeTab) renderActiveTab();
+      } catch (e) {
+        console.error('Chyba JSON:', e);
+      }
+    });
+
+    client.on('error', (err) => {
+      console.error('Chyba MQTT připojení:', err);
+      startLiveDemoSimulation();
+    });
+
+    // První vykreslení výchozího stavu
+    renderActiveTab();
+  </script>
+</body>
+</html>
