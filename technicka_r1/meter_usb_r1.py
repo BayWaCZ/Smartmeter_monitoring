@@ -7,7 +7,7 @@ import serial.tools.list_ports
 import paho.mqtt.client as mqtt
 from pymodbus.client import ModbusSerialClient
 
-# --- 1. KONFIGURACE HIVEMQ CLOUD ---
+# --- 1. KONFIGURACE HIVEMQ CLOUD  ---
 MQTT_SERVER = "109e3418cc4e472ca8be85f97368e4da.s1.eu.hivemq.cloud"
 MQTT_PORT = 8883
 MQTT_USER = "BayWa_r1"  # Účet v HiveMQ Access Control
